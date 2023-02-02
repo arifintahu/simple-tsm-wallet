@@ -1,0 +1,13 @@
+{
+	"userID": "my-user-id",
+	"urls": [
+        "https://my-tsm-node1.tsm.sepior.net",
+        "https://my-tsm-node2.tsm.sepior.net",
+        "https://my-tsm-node3.tsm.sepior.net"
+    ],
+	"passwords": [
+        "password1",
+        "password2",
+        "password3"
+    ]
+}
