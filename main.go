@@ -1,61 +1,106 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"strings"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"gitlab.com/sepior/go-tsm-sdk/sdk/tsm"
+	"golang.org/x/crypto/ripemd160"
 )
 
-func main() {
-
-	credentials, err := ioutil.ReadFile("sepior.creds.json")
+func loadClient(credsFile string) (tsm.ECDSAClient, error) {
+	credentials, err := ioutil.ReadFile(credsFile)
 	if err != nil {
-		log.Fatal(err)
+		return tsm.ECDSAClient{}, err
 	}
-
-	// Create ECDSA client from credentials
 
 	tsmClient, err := tsm.NewPasswordClientFromEncoding(string(credentials))
 	if err != nil {
-		log.Fatal(err)
+		return tsm.ECDSAClient{}, err
 	}
-	ecdsaClient := tsm.NewECDSAClient(tsmClient) // ECDSA with secp256k1 curve
+	return tsm.NewECDSAClient(tsmClient), nil
+}
 
-	// Generate ECDSA key
+func loadKey(keyFile string) (string, error) {
+	key, err := ioutil.ReadFile(keyFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(key)), nil
+}
 
-	keyID, err := ecdsaClient.Keygen("secp256k1")
+func getCompressedPubKeyECDSA(publicKey *ecdsa.PublicKey) []byte {
+	xBytes := publicKey.X.Bytes()
+	yBytes := publicKey.Y.Bytes()
+	compressedPublicKey := make([]byte, 1+len(xBytes))
+	ySignFlag := yBytes[len(yBytes)-1] % 2
+	compressedPublicKey[0] = 2 | ySignFlag
+	copy(compressedPublicKey[1:], xBytes)
+
+	return compressedPublicKey
+}
+
+const PubKeySize = 33
+
+func getAccAddressFromPubKeyECDSA(pubKey []byte) string {
+	if len(pubKey) != PubKeySize {
+		panic("length of pubkey is incorrect")
+	}
+
+	sha := sha256.Sum256(pubKey)
+	hasherRIPEMD160 := ripemd160.New()
+	hasherRIPEMD160.Write(sha[:])
+
+	return sdk.AccAddress(hasherRIPEMD160.Sum(nil)).String()
+}
+
+func main() {
+	// Load client
+	ecdsaClient, err := loadClient("sepior.creds.json")
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Generated key: ID=%s\n", keyID)
 
-	// Get the public key as a DER encoding
-
-	derPubKey, err := ecdsaClient.PublicKey(keyID, nil)
+	// Load key
+	keyID, nil := loadKey("key.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// We can now sign with the created key
+	// Get derivative public key
+	chainPath := []uint32{1, 2, 3}
+	derPublicKey, err := ecdsaClient.PublicKey(keyID, chainPath)
+	if err != nil {
+		panic(err)
+	}
 
+	// Get public key
+	publicKey, err := ecdsaClient.ParsePublicKey(derPublicKey)
+	if err != nil {
+		panic(err)
+	}
+
+	// Get compressed public key
+	compressedPublicKey := getCompressedPubKeyECDSA(publicKey)
+	fmt.Printf("PubKey: %s\n", hex.EncodeToString(compressedPublicKey))
+
+	// Get account address
+	accAddress := getAccAddressFromPubKeyECDSA(compressedPublicKey)
+	fmt.Printf("Account Address: %s\n", accAddress)
+
+	// Sign message
 	message := []byte(`Hello World`)
 	hash := sha256.Sum256(message)
-	derSignature, _, err := ecdsaClient.Sign(keyID, nil, hash[:])
+	signature, _, err := ecdsaClient.Sign(keyID, chainPath, hash[:])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Verify the signature relative to the signed message and the public key
-
-	err = tsm.ECDSAVerify(derPubKey, hash[:], derSignature)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("PubKey: %s\n", hex.EncodeToString(derPubKey))
-	fmt.Printf("Signature: %s\n", hex.EncodeToString(derSignature))
+	fmt.Printf("Signature: %s\n", hex.EncodeToString(signature))
 }
