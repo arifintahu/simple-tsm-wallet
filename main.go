@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -48,16 +49,16 @@ func getCompressedPubKeyECDSA(publicKey *ecdsa.PublicKey) []byte {
 
 const PubKeySize = 33
 
-func getAccAddressFromPubKeyECDSA(pubKey []byte) string {
+func getAccAddressFromPubKeyECDSA(pubKey []byte) (string, error) {
 	if len(pubKey) != PubKeySize {
-		panic("length of pubkey is incorrect")
+		return "", errors.New("length of pubkey is incorrect")
 	}
 
 	sha := sha256.Sum256(pubKey)
 	hasherRIPEMD160 := ripemd160.New()
 	hasherRIPEMD160.Write(sha[:])
 
-	return sdk.AccAddress(hasherRIPEMD160.Sum(nil)).String()
+	return sdk.AccAddress(hasherRIPEMD160.Sum(nil)).String(), nil
 }
 
 func main() {
@@ -77,13 +78,13 @@ func main() {
 	chainPath := []uint32{1, 2, 3}
 	derPublicKey, err := ecdsaClient.PublicKey(keyID, chainPath)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
 	// Get public key
 	publicKey, err := ecdsaClient.ParsePublicKey(derPublicKey)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
 	// Get compressed public key
@@ -91,11 +92,14 @@ func main() {
 	fmt.Printf("PubKey: %s\n", hex.EncodeToString(compressedPublicKey))
 
 	// Get account address
-	accAddress := getAccAddressFromPubKeyECDSA(compressedPublicKey)
+	accAddress, err := getAccAddressFromPubKeyECDSA(compressedPublicKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("Account Address: %s\n", accAddress)
 
 	// Sign message
-	message := []byte(`Hello World`)
+	message := []byte(`Hello World 123`)
 	hash := sha256.Sum256(message)
 	signature, _, err := ecdsaClient.Sign(keyID, chainPath, hash[:])
 	if err != nil {
