@@ -169,6 +169,9 @@ func main() {
 
 	// Generate the bytes to be signed.
 	signBytes, err := encCfg.TxConfig.SignModeHandler().GetSignBytes(encCfg.TxConfig.SignModeHandler().DefaultMode(), signerData, txBuilder.GetTx())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Sign those bytes
 	hash := sha256.Sum256(signBytes)
