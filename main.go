@@ -4,14 +4,14 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"encoding/asn1"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
-	"strings"
 
+	"github.com/arifintahu/simple-tsm-wallet/internal/client"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	"github.com/cosmos/cosmos-sdk/simapp"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -26,27 +26,6 @@ import (
 
 const PubKeySize = 33
 const pubkeyCompressed byte = 0x2
-
-func loadClient(credsFile string) (tsm.ECDSAClient, error) {
-	credentials, err := ioutil.ReadFile(credsFile)
-	if err != nil {
-		return tsm.ECDSAClient{}, err
-	}
-
-	tsmClient, err := tsm.NewPasswordClientFromEncoding(string(credentials))
-	if err != nil {
-		return tsm.ECDSAClient{}, err
-	}
-	return tsm.NewECDSAClient(tsmClient), nil
-}
-
-func loadKey(keyFile string) (string, error) {
-	key, err := ioutil.ReadFile(keyFile)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(key)), nil
-}
 
 func isOdd(a *big.Int) bool {
 	return a.Bit(0) == 1
@@ -82,18 +61,29 @@ func getAccAddressFromPubKeyECDSA(pubKey []byte) (sdk.AccAddress, error) {
 	return sdk.AccAddress(hasherRIPEMD160.Sum(nil)), nil
 }
 
+func ASN1ParseSecp256k1Signature(signature []byte) (r, s *big.Int, err error) {
+	sig := struct {
+		R *big.Int
+		S *big.Int
+	}{}
+	postfix, err := asn1.Unmarshal(signature, &sig)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(postfix) > 0 {
+		return nil, nil, errors.New("trailing bytes for ASN1 ecdsa signature")
+	}
+	return sig.R, sig.S, nil
+}
+
 func main() {
 	// Load client
-	ecdsaClient, err := loadClient("sepior.creds.json")
+	tsmClient, err := client.NewECDSAClientFromFile("sepior.creds.json", "key.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Load key
-	keyID, nil := loadKey("key.txt")
-	if err != nil {
-		log.Fatal(err)
-	}
+	ecdsaClient := tsmClient.EcdsaClient
+	keyID := tsmClient.KeyID
 
 	// Get derivative public key
 	chainPath := []uint32{1, 2, 3}
@@ -140,7 +130,7 @@ func main() {
 
 	// First round: we gather all the signer infos. We use the "set empty
 	// signature" hack to do that.
-	var accSeq uint64 = 0
+	var accSeq uint64 = 2
 	var accNumber uint64 = 724114
 	var sigsV2 []signing.SignatureV2
 
@@ -163,37 +153,50 @@ func main() {
 	sigsV2 = []signing.SignatureV2{}
 	signerData := xauthsigning.SignerData{
 		ChainID:       "theta-testnet-001",
-		Sequence:      accSeq,
 		AccountNumber: accNumber,
+		Sequence:      accSeq,
 	}
 
 	// Generate the bytes to be signed.
-	signBytes, err := encCfg.TxConfig.SignModeHandler().GetSignBytes(encCfg.TxConfig.SignModeHandler().DefaultMode(), signerData, txBuilder.GetTx())
+	signMode := encCfg.TxConfig.SignModeHandler().DefaultMode()
+	signBytes, err := encCfg.TxConfig.SignModeHandler().GetSignBytes(signMode, signerData, txBuilder.GetTx())
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Sign those bytes
 	hash := sha256.Sum256(signBytes)
-	signature, _, err := ecdsaClient.Sign(keyID, chainPath, hash[:])
+	signatureDER, recoveryID, err := ecdsaClient.Sign(keyID, chainPath, hash[:])
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	r, s, err := ASN1ParseSecp256k1Signature(signatureDER)
+	if err != nil {
+		// handle error
+	}
+	signature := make([]byte, 2*32+1)
+	r.FillBytes(signature[0:32])
+	s.FillBytes(signature[32:64])
+	signature[64] = byte(recoveryID)
+
+	fmt.Println(len(signature[:64]))
 	// Verify signature
-	err = tsm.ECDSAVerify(derPublicKey, hash[:], signature)
+	err = tsm.ECDSAVerify(derPublicKey, hash[:], signatureDER)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	sigData := signing.SingleSignatureData{
+		SignMode:  signMode,
+		Signature: signature[:64],
 	}
 
 	// Construct the SignatureV2 struct
 	sigV2 = signing.SignatureV2{
-		PubKey: &secp256k1.PubKey{Key: compressedPublicKey},
-		Data: &signing.SingleSignatureData{
-			SignMode:  encCfg.TxConfig.SignModeHandler().DefaultMode(),
-			Signature: signature,
-		},
-		// Sequence: accSeq,
+		PubKey:   &secp256k1.PubKey{Key: compressedPublicKey},
+		Data:     &sigData,
+		Sequence: accSeq,
 	}
 
 	sigsV2 = append(sigsV2, sigV2)
